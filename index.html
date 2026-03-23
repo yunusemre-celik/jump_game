@@ -62,6 +62,12 @@
             <p>Distance: <span id="finalScore">0</span>m<br>Best: <span id="bestScore">0</span>m</p>
             <button class="btn" id="restartBtn">Reboot</button>
         </div>
+        <div id="pauseScreen" class="panel">
+            <h1>Paused</h1>
+            <p>System on Standby</p>
+            <button class="btn" id="resumeBtn">Resume</button>
+        </div>
+        <button id="pauseBtn" style="position:absolute; top:20px; left:20px; font-size:1.2rem; padding:10px 20px; display:none; pointer-events:auto; background:transparent; color:#0ff; border:2px solid #0ff; cursor:pointer; font-weight:bold; text-shadow:0 0 5px #0ff; box-shadow:0 0 10px #0ff inset;">||</button>
     </div>
 
     <script>
@@ -73,6 +79,9 @@
         const finalScoreEl = document.getElementById('finalScore');
         const bestScoreEl = document.getElementById('bestScore');
         const charBtns = document.querySelectorAll('.char-btn');
+        const pauseScreen = document.getElementById('pauseScreen');
+        const pauseBtn = document.getElementById('pauseBtn');
+        const resumeBtn = document.getElementById('resumeBtn');
         
         let width, height;
         let bestScore = localStorage.getItem('cyberJumpBest') || 0;
@@ -162,6 +171,7 @@
         // Game objects
         const gameState = {
             isPlaying: false,
+            isPaused: false,
             speed: 5,
             baseSpeed: 5,
             score: 0,
@@ -208,7 +218,7 @@
             }
             update(keys) {
                 // Hold to jump logic
-                if (keys.jump && !this.isJumping && this.y >= groundLevel) {
+                if (keys.jump && !this.isJumping) {
                     this.isJumping = true;
                     this.jumpTimer = 0;
                     this.vy = -10;
@@ -357,6 +367,24 @@
             });
         });
 
+        function togglePause() {
+            if (!gameState.isPlaying || gameOverScreen.classList.contains('active')) return;
+            gameState.isPaused = !gameState.isPaused;
+            if (gameState.isPaused) {
+                pauseScreen.classList.add('active');
+                if(bgmGain && audioCtx) bgmGain.gain.setValueAtTime(0.001, audioCtx.currentTime);
+            } else {
+                pauseScreen.classList.remove('active');
+                if(bgmGain && audioCtx) bgmGain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+            }
+        }
+
+        pauseBtn.addEventListener('click', togglePause);
+        resumeBtn.addEventListener('click', togglePause);
+        window.addEventListener('keydown', e => {
+            if (e.code === 'Escape') togglePause();
+        });
+
         // Start/Restart
         document.getElementById('startBtn').addEventListener('click', startGame);
         document.getElementById('restartBtn').addEventListener('click', startGame);
@@ -366,7 +394,9 @@
             startBGM();
             startScreen.classList.remove('active');
             gameOverScreen.classList.remove('active');
+            pauseScreen.classList.remove('active');
             hud.style.display = 'block';
+            pauseBtn.style.display = 'block';
             
             player = new Player();
             obstacles = [];
@@ -375,6 +405,7 @@
             
             groundLevel = height - 100;
             gameState.isPlaying = true;
+            gameState.isPaused = false;
             gameState.score = 0;
             gameState.distance = 0;
             gameState.speed = gameState.baseSpeed;
@@ -395,6 +426,7 @@
 
         function gameOver() {
             gameState.isPlaying = false;
+            pauseBtn.style.display = 'none';
             stopBGM();
             playSound('death');
             createParticles(player.x, player.y, '#f00', 50);
@@ -566,8 +598,10 @@
         }
 
         function gameLoop() {
-            update();
-            draw();
+            if (!gameState.isPaused) {
+                update();
+                draw();
+            }
             if (gameState.isPlaying || particles.length > 0) {
                 requestAnimationFrame(gameLoop);
             }
