@@ -40,12 +40,16 @@
             text-transform: uppercase; font-weight: bold; box-shadow: 0 0 10px #f0f inset;
         }
         .btn:hover { background: #f0f; color: #000; box-shadow: 0 0 20px #f0f, 0 0 20px #f0f inset; }
-        #hud { position: absolute; top: 20px; right: 20px; font-size: 2rem; font-weight: bold; color: #0ff; text-shadow: 0 0 10px #0ff; display: none; }
+        #hud { position: absolute; top: 20px; right: 20px; font-size: 2rem; font-weight: bold; color: #0ff; text-shadow: 0 0 10px #0ff; display: none; text-align: right; }
     </style>
 </head>
 <body>
     <canvas id="gameCanvas"></canvas>
-    <div id="hud">0M</div>
+    <div id="hud">
+        <div id="scoreDisplay">0M</div>
+        <div id="coinDisplay" style="color:#ff0; font-size:1.5rem"></div>
+        <div id="powerupHud" style="font-size:1.2rem; color:#f0f; text-shadow: 0 0 5px #f0f"></div>
+    </div>
     <div id="ui">
         <div id="startScreen" class="panel active">
             <h1>Neon Cyber Jump</h1>
@@ -170,14 +174,16 @@
 
         // Game objects
         const gameState = {
-            isPlaying: false,
             isPaused: false,
             speed: 5,
             baseSpeed: 5,
+            maxSpeed: 16,
             score: 0,
             distance: 0,
             dayTime: 0, // 0 to 1
-            gravity: 0.6
+            gravity: 0.6,
+            fallMultiplier: 1.6,
+            coins: 0
         };
 
         class Player {
@@ -186,9 +192,20 @@
                 this.y = height / 2;
                 this.w = 40;
                 this.h = 40;
+                this.hitW = 26; // Smaller collision box
+                this.hitH = 34;
                 this.vy = 0;
                 this.isJumping = false;
                 this.jumpTimer = 0;
+                
+                this.coyoteCounter = 0;
+                this.jumpBufferCounter = 0;
+                this.hasDoubleJumped = false;
+                this.dashTimer = 0;
+                this.isDashing = false;
+                this.onGround = false;
+                this.shieldActive = false;
+                this.magnetTime = 0;
             }
             draw() {
                 ctx.save();
@@ -217,30 +234,84 @@
                 ctx.restore();
             }
             update(keys) {
-                // Hold to jump logic
-                if (keys.jump && !this.isJumping) {
-                    this.isJumping = true;
-                    this.jumpTimer = 0;
-                    this.vy = -10;
-                    playSound('jump');
-                    createParticles(this.x, this.y + this.h/2, '#fff', 10);
+                // Jump Buffering
+                if (keys.jumpPressedThisFrame) {
+                    this.jumpBufferCounter = 10;
                 }
-                
-                if (keys.jump && this.isJumping) {
+                if (this.jumpBufferCounter > 0) {
+                    this.jumpBufferCounter--;
+                }
+
+                // Coyote Time
+                if (this.onGround) {
+                    this.coyoteCounter = 8;
+                    this.hasDoubleJumped = false;
+                    this.isDashing = false;
+                    this.dashTimer = 0;
+                } else {
+                    if (this.coyoteCounter > 0) this.coyoteCounter--;
+                }
+
+                this.magnetTime = Math.max(0, this.magnetTime - 1);
+
+                // Normal Jump
+                if (this.jumpBufferCounter > 0 && this.coyoteCounter > 0 && !this.isJumping) {
+                    this.executeJump();
+                    this.jumpBufferCounter = 0;
+                    this.coyoteCounter = 0;
+                } 
+                // Double Jump or Dash
+                else if (keys.jumpPressedThisFrame && !this.onGround && this.coyoteCounter === 0) {
+                    if (selectedChar === 'knight' && !this.hasDoubleJumped) {
+                        this.hasDoubleJumped = true;
+                        this.executeJump();
+                        createParticles(this.x, this.y, '#0ff', 15);
+                    } else if (selectedChar === 'robot' && !this.isDashing && this.dashTimer === 0) {
+                        this.isDashing = true;
+                        this.dashTimer = 20;
+                        this.vy = 0; 
+                        playSound('jump');
+                        createParticles(this.x, this.y, '#f0f', 15);
+                    }
+                }
+
+                // Variable jump height
+                if (keys.jump && this.isJumping && !this.isDashing) {
                     this.jumpTimer++;
-                    if (this.jumpTimer < 15) { // variable jump height
+                    if (this.jumpTimer < 15) {
                         this.vy -= 0.6;
                     }
                 }
                 
                 if (!keys.jump && this.isJumping) {
-                    this.jumpTimer = 15; // cap jump if released
+                    this.jumpTimer = 15;
                 }
 
-                this.vy += gameState.gravity;
-                this.y += this.vy;
+                // Dash & Physics
+                if (this.isDashing) {
+                    this.dashTimer--;
+                    this.vy = 0;
+                    if (this.dashTimer <= 0) {
+                        this.isDashing = false;
+                    }
+                    if(Math.random() < 0.5) createParticles(this.x - this.w/2, this.y, '#f0f', 2);
+                } else {
+                    let grav = gameState.gravity;
+                    if (this.vy > 0) grav *= gameState.fallMultiplier;
+                    this.vy += grav;
+                }
 
-                // Ground collision is handled by obstacles now
+                this.y += this.vy;
+                this.onGround = false;
+            }
+
+            executeJump() {
+                this.isJumping = true;
+                this.jumpTimer = 0;
+                this.vy = -10;
+                this.onGround = false;
+                playSound('jump');
+                createParticles(this.x, this.y + this.h/2, '#fff', 10);
             }
         }
 
@@ -325,12 +396,109 @@
             }
         }
 
+        class Collectible {
+            constructor(x, y, type) {
+                this.x = x;
+                this.y = y;
+                this.w = 20;
+                this.h = 20;
+                this.type = type; 
+                this.hoverOffset = Math.random() * Math.PI * 2;
+            }
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y + Math.sin(gameState.dayTime*100 + this.hoverOffset) * 10);
+                if (this.type === 'coin') {
+                    ctx.fillStyle = '#ff0';
+                    ctx.shadowColor = '#ff0';
+                    ctx.shadowBlur = 10;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 10, 0, Math.PI*2);
+                    ctx.fill();
+                } else if (this.type === 'shield') {
+                    ctx.fillStyle = '#00f';
+                    ctx.shadowColor = '#00f';
+                    ctx.shadowBlur = 15;
+                    ctx.fillRect(-10, -10, 20, 20);
+                    ctx.strokeStyle = '#fff';
+                    ctx.strokeRect(-10, -10, 20, 20);
+                } else if (this.type === 'magnet') {
+                    ctx.fillStyle = '#f00';
+                    ctx.shadowColor = '#f00';
+                    ctx.shadowBlur = 10;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 10, Math.PI, 0); 
+                    ctx.lineTo(10, 10);
+                    ctx.lineTo(-10, 10);
+                    ctx.fill();
+                }
+                ctx.restore();
+            }
+            update() {
+                if (this.type === 'coin' && player.magnetTime > 0) {
+                    let dx = player.x - this.x;
+                    let dy = player.y - this.y;
+                    let dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist < 300) {
+                        this.x += (dx / dist) * 10;
+                        this.y += (dy / dist) * 10;
+                    } else {
+                        this.x -= gameState.speed;
+                    }
+                } else {
+                    this.x -= gameState.speed;
+                }
+            }
+        }
+
+        const patterns = [
+            (x, y) => {
+                obstacles.push(new Obstacle(x, y, 600, 500, 'platform'));
+                return x + 600 + Math.random() * 100 + 100;
+            },
+            (x, y) => {
+                obstacles.push(new Obstacle(x, y, 400, 500, 'platform'));
+                obstacles.push(new Obstacle(x + 200, y - 60, 30, 60, 'wall'));
+                return x + 400 + Math.random() * 150 + 100;
+            },
+            (x, y) => {
+                let nextX = x + 100;
+                obstacles.push(new Obstacle(nextX, y - 50, 100, 20, 'platform'));
+                nextX += 200;
+                obstacles.push(new Obstacle(nextX, y - 100, 100, 20, 'platform'));
+                nextX += 250;
+                obstacles.push(new Obstacle(nextX, y, 400, 500, 'platform'));
+                return nextX + 400 + Math.random() * 100 + 100;
+            },
+            (x, y) => {
+                obstacles.push(new Obstacle(x, y, 600, 500, 'platform'));
+                let w = new Obstacle(x + 600, y - 60, 40, 60, 'moving_wall');
+                obstacles.push(w);
+                return x + 600 + Math.random() * 100 + 100;
+            }
+        ];
+
+        function spawnCollectibles(startX, endX, y) {
+            let type = 'coin';
+            if (Math.random() < 0.1) type = 'shield';
+            else if (Math.random() < 0.1) type = 'magnet';
+            
+            if (type === 'coin') {
+                for(let i=0; i<3; i++) {
+                     collectibles.push(new Collectible(startX + i * 50, y, 'coin'));
+                }
+            } else {
+                 collectibles.push(new Collectible(startX + (endX-startX)/2, y, type));
+            }
+        }
+
         let player;
         let obstacles = [];
         let particles = [];
         let buildings = [];
+        let collectibles = [];
         let groundLevel;
-        let keys = { jump: false };
+        let keys = { jump: false, jumpPressedThisFrame: false };
         let lastObstacleX = 0;
 
         function createParticles(x, y, color, count) {
@@ -341,6 +509,11 @@
 
         // Input Handling
         const jumpAction = (val) => {
+            if (val && !keys.jump) {
+                keys.jumpPressedThisFrame = true;
+            } else if (!val) {
+                keys.jumpPressedThisFrame = false;
+            }
             keys.jump = val;
             if (val) initAudio();
         };
@@ -447,73 +620,88 @@
         function spawnObstacles() {
             if (obstacles.length > 0) {
                 const last = obstacles[obstacles.length - 1];
-                if (last.x + last.w < width + 200) {
-                    // Decide what to spawn
-                    const rand = Math.random();
-                    const gap = Math.random() * 150 + 100 + (gameState.speed * 10);
+                if (last.x + last.w < width + 400) {
+                    const patternIndex = Math.floor(Math.random() * patterns.length);
+                    let prevX = lastObstacleX;
+                    lastObstacleX = patterns[patternIndex](Math.max(lastObstacleX, last.x + last.w), groundLevel);
                     
-                    if (rand < 0.6) {
-                        // Platform (ground)
-                        const w = Math.random() * 400 + 200;
-                        obstacles.push(new Obstacle(last.x + last.w + gap, groundLevel, w, 500, 'platform'));
-                    } else if (rand < 0.8) {
-                        // Wall on previous platform
-                        const w = Math.random() * 400 + 200;
-                        obstacles.push(new Obstacle(last.x + last.w, groundLevel, w, 500, 'platform'));
-                        // Add wall
-                        obstacles.push(new Obstacle(last.x + last.w + w/2, groundLevel - 60, 30, 60, 'wall'));
-                    } else {
-                        // Floating platform
-                        const w = Math.random() * 200 + 100;
-                        const y = groundLevel - (Math.random() * 100 + 50);
-                        // base ground to prevent falling indefinitely right away, but with gap
-                        obstacles.push(new Obstacle(last.x + last.w + gap, y, w, 20, 'platform'));
-                        // still need ground eventually
-                        obstacles.push(new Obstacle(last.x + last.w + gap + w + gap, groundLevel, 400, 500, 'platform'));
+                    if(Math.random() < 0.5) {
+                       spawnCollectibles(prevX + 200, lastObstacleX - 100, groundLevel - 150);
                     }
                 }
             }
         }
 
+        function die() {
+            if (player.shieldActive) {
+                player.shieldActive = false;
+                createParticles(player.x, player.y, '#00f', 40);
+                playSound('jump'); 
+                player.vy = -12; 
+                return; 
+            }
+            gameOver();
+        }
+
         function checkCollisions() {
-            let onGround = false;
-            
-            // Check falling out of bounds
             if (player.y > height + 100) {
-                gameOver();
+                die();
                 return;
             }
 
             for (let obs of obstacles) {
-                // AABB Collision
-                if (player.x + player.w/2 > obs.x && 
-                    player.x - player.w/2 < obs.x + obs.w &&
-                    player.y + player.h/2 > obs.y && 
-                    player.y - player.h/2 < obs.y + obs.h) {
+                // Improved AABB Collision with smaller hitboxes
+                if (player.x + player.hitW/2 > obs.x && 
+                    player.x - player.hitW/2 < obs.x + obs.w &&
+                    player.y + player.hitH/2 > obs.y && 
+                    player.y - player.hitH/2 < obs.y + obs.h) {
                     
-                    if (obs.type === 'wall') {
-                        gameOver(); // Hit a wall directly
+                    if (obs.type === 'wall' || obs.type === 'moving_wall') {
+                        if (player.isDashing) {
+                            obs.passed = true;
+                            obs.y += 1000;
+                            createParticles(obs.x + obs.w/2, obs.y - 1000 + obs.h/2, '#f0f', 30);
+                            playSound('jump');
+                        } else {
+                            die(); 
+                        }
                         return;
                     }
 
-                    // Platform collision
-                    // Check if coming from above
-                    if (player.vy >= 0 && player.y + player.h/2 - player.vy <= obs.y + 10) {
-                        player.y = obs.y - player.h/2;
+                    let playerBottom = player.y + player.hitH/2;
+                    let prevPlayerBottom = playerBottom - player.vy;
+
+                    // Corner Forgiveness (snap up if hitting near the top)
+                    if (player.vy >= 0 && prevPlayerBottom <= obs.y + 15) {
+                        player.y = obs.y - player.hitH/2;
                         player.vy = 0;
                         player.isJumping = false;
-                        onGround = true;
-                    } else {
-                        // Hit side or bottom of platform
-                        gameOver();
+                        player.onGround = true;
+                    } else if (!player.isDashing) {
+                        die();
                         return;
                     }
                 }
             }
             
-            // Freefall
-            if (!onGround && !player.isJumping) {
-                player.isJumping = true; 
+            for (let i = collectibles.length - 1; i >= 0; i--) {
+                let c = collectibles[i];
+                if (Math.abs(player.x - c.x) < player.hitW/2 + c.w/2 && 
+                    Math.abs(player.y - c.y) < player.hitH/2 + c.h/2) {
+                    if (c.type === 'coin') {
+                        gameState.coins++;
+                        gameState.distance += 25;
+                        playSound('jump'); 
+                    } else if (c.type === 'shield') {
+                        player.shieldActive = true;
+                        playSound('jump');
+                    } else if (c.type === 'magnet') {
+                        player.magnetTime = 600; 
+                        playSound('jump');
+                    }
+                    createParticles(c.x, c.y, '#fff', 10);
+                    collectibles.splice(i, 1);
+                }
             }
         }
 
@@ -528,9 +716,18 @@
             }
 
             // Difficulty increase
+            if (gameState.speed < gameState.maxSpeed) {
+                gameState.speed = gameState.baseSpeed + (gameState.distance * 0.002);
+                if (gameState.speed > gameState.maxSpeed) gameState.speed = gameState.maxSpeed;
+            }
             gameState.distance += gameState.speed / 10;
-            gameState.speed = gameState.baseSpeed + (gameState.distance * 0.002);
-            hud.innerText = Math.floor(gameState.distance) + 'M';
+            document.getElementById('scoreDisplay').innerText = Math.floor(gameState.distance) + 'M';
+            document.getElementById('coinDisplay').innerText = gameState.coins + ' Coins';
+            
+            let powerStats = '';
+            if (player.shieldActive) powerStats += 'SHIELD ';
+            if (player.magnetTime > 0) powerStats += 'MAGNET ';
+            document.getElementById('powerupHud').innerText = powerStats;
 
             // Day/Night cycle
             gameState.dayTime += 0.0005;
@@ -547,15 +744,21 @@
             }
 
             for(let i=obstacles.length-1; i>=0; i--) {
+                if (obstacles[i].type === 'moving_wall') obstacles[i].x -= 2; // Extra speed
                 obstacles[i].update();
                 if(obstacles[i].x + obstacles[i].w < -100) {
                     obstacles.splice(i, 1);
                 }
             }
+            
+            for(let i=collectibles.length-1; i>=0; i--) {
+                collectibles[i].update();
+            }
 
             // Player logic
             player.update(keys);
             checkCollisions();
+            keys.jumpPressedThisFrame = false; // reset frame input
 
             // Particles
             for(let i=particles.length-1; i>=0; i--) {
@@ -593,8 +796,22 @@
             for(let b of buildings) b.draw();
 
             for(let obs of obstacles) obs.draw();
+            for(let c of collectibles) c.draw();
             for(let p of particles) p.draw();
             if (gameState.isPlaying) player.draw();
+            
+            // Warning for moving walls
+            let hasMoving = false;
+            for(let o of obstacles) {
+                if(o.type === 'moving_wall' && o.x > width && o.x < width + 600) {
+                    hasMoving = true; break;
+                }
+            }
+            if (hasMoving) {
+                ctx.fillStyle = `rgba(255, 0, 0, ${Math.abs(Math.sin(Date.now()/100))})`;
+                ctx.font = 'bold 60px Arial';
+                ctx.fillText('!', width - 50, height / 2);
+            }
         }
 
         function gameLoop() {
